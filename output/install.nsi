@@ -75,6 +75,10 @@ LangString LNKFORUNINSTALL ${LANG_TRADCHINESE} "卸載小狼毫"
 LangString CONFIRMATION ${LANG_TRADCHINESE} "安裝前，請先卸載舊版本的小狼毫。$\n$\n按下「確定」移除舊版本，按下「取消」放棄本次安裝。"
 LangString SYSTEMVERSIONNOTOK ${LANG_TRADCHINESE} "您的系统不被支持，最低系統要求:Windows 8.1!"
 LangString AUTOCHKUPDATE ${LANG_TRADCHINESE} "自動檢查版本更新？"
+LangString UPGRADEUNINSTALLFAILED ${LANG_TRADCHINESE} "無法完整卸載舊版本，安裝已停止。請關閉正在使用輸入法的程序後重試。"
+LangString INSTALLTSFFAILED ${LANG_TRADCHINESE} "輸入法系統組件安裝失敗，安裝已停止。"
+LangString UNINSTALLTSFFAILED ${LANG_TRADCHINESE} "輸入法系統組件卸載失敗，卸載已停止。"
+LangString RELOADAPPS ${LANG_TRADCHINESE} "升級已完成，無需重啟 Windows。請重新開啟正在使用輸入法的程序，以載入新版輸入法組件。"
 
 !insertmacro MUI_LANGUAGE "SimpChinese"
 LangString DISPLAYNAME ${LANG_SIMPCHINESE} "小狼毫输入法"
@@ -92,6 +96,10 @@ LangString LNKFORUNINSTALL ${LANG_SIMPCHINESE} "卸载小狼毫"
 LangString CONFIRMATION ${LANG_SIMPCHINESE} '安装前，请先卸载旧版本的小狼毫。$\n$\n点击 "确定" 移除旧版本，或点击 "取消" 放弃本次安装。'
 LangString SYSTEMVERSIONNOTOK ${LANG_SIMPCHINESE} "您的系統不被支持，最低系统要求:Windows 8.1!"
 LangString AUTOCHKUPDATE ${LANG_SIMPCHINESE} "自动检查版本更新？"
+LangString UPGRADEUNINSTALLFAILED ${LANG_SIMPCHINESE} "无法完整卸载旧版本，安装已停止。请关闭正在使用输入法的程序后重试。"
+LangString INSTALLTSFFAILED ${LANG_SIMPCHINESE} "输入法系统组件安装失败，安装已停止。"
+LangString UNINSTALLTSFFAILED ${LANG_SIMPCHINESE} "输入法系统组件卸载失败，卸载已停止。"
+LangString RELOADAPPS ${LANG_SIMPCHINESE} "升级已完成，无需重启 Windows。请重新打开正在使用输入法的程序，以加载新版输入法组件。"
 
 !insertmacro MUI_LANGUAGE "English"
 LangString DISPLAYNAME ${LANG_ENGLISH} "Weasel"
@@ -109,10 +117,15 @@ LangString LNKFORUNINSTALL ${LANG_ENGLISH} "Uninstall Weasel"
 LangString CONFIRMATION ${LANG_ENGLISH} "Before installation, please uninstall the old version of Weasel.$\n$\nPress 'OK' to remove the old version, or 'Cancel' to abort installation."
 LangString SYSTEMVERSIONNOTOK ${LANG_ENGLISH} "Your system not supported, minimium system required: Windows 8.1!"
 LangString AUTOCHKUPDATE ${LANG_ENGLISH} "Automatically check for updates?"
+LangString UPGRADEUNINSTALLFAILED ${LANG_ENGLISH} "The previous version could not be completely removed. Setup has stopped. Close applications using the input method and try again."
+LangString INSTALLTSFFAILED ${LANG_ENGLISH} "The input method system component could not be installed. Setup has stopped."
+LangString UNINSTALLTSFFAILED ${LANG_ENGLISH} "The input method system component could not be removed. Uninstall has stopped."
+LangString RELOADAPPS ${LANG_ENGLISH} "Upgrade completed without restarting Windows. Reopen applications that use the input method to load the new component."
 
 ;--------------------------------
 
 Function .onInit
+  StrCpy $4 ""
   ; if not version >= 8.1, quit and MessageBox(if not silent)
   ${IfNot} ${AtLeastWin8.1}
     IfSilent toquit
@@ -121,11 +134,32 @@ toquit:
     Quit
   ${EndIf}
 
+  ; Reuse the previous installation root. Older builds may only have
+  ; WeaselRoot, and different installer architectures may use either registry view.
+  SetRegView 32
   ReadRegStr $R0 HKLM "Software\Rime\Weasel" "InstallDir"
-  StrCmp $R0 "" 0 skip
-  ; The default installation directory
-  ; install x64 build for NativeARM64_WINDOWS11 and NativeAMD64_WINDOWS11
-  ${If} ${AtLeastWin11} ; Windows 11 and above
+  StrCmp $R0 "" try_root_32
+  StrCpy $INSTDIR "$R0"
+  GoTo install_dir_ready
+try_root_32:
+  ReadRegStr $R0 HKLM "Software\Rime\Weasel" "WeaselRoot"
+  StrCmp $R0 "" try_install_dir_64
+  ${GetParent} "$R0" $INSTDIR
+  StrCmp $INSTDIR "" try_install_dir_64 install_dir_ready
+try_install_dir_64:
+  SetRegView 64
+  ReadRegStr $R0 HKLM "Software\Rime\Weasel" "InstallDir"
+  StrCmp $R0 "" try_root_64
+  StrCpy $INSTDIR "$R0"
+  GoTo install_dir_ready
+try_root_64:
+  ReadRegStr $R0 HKLM "Software\Rime\Weasel" "WeaselRoot"
+  StrCmp $R0 "" use_default_install_dir
+  ${GetParent} "$R0" $INSTDIR
+  StrCmp $INSTDIR "" use_default_install_dir install_dir_ready
+use_default_install_dir:
+  ; No previous installation path was found; use the platform default.
+  ${If} ${AtLeastWin11}
     ${If} ${IsNativeARM64}
       StrCpy $INSTDIR "$PROGRAMFILES64\Rime"
     ${ElseIf} ${IsNativeAMD64}
@@ -133,47 +167,75 @@ toquit:
     ${Else}
       StrCpy $INSTDIR "$PROGRAMFILES\Rime"
     ${Endif}
-  ; install x64 build for NativeAMD64_BELLOW_WINDOWS11
-  ${Else} ; Windows 10 or bellow
+  ${Else}
     ${If} ${IsNativeAMD64}
       StrCpy $INSTDIR "$PROGRAMFILES64\Rime"
     ${Else}
       StrCpy $INSTDIR "$PROGRAMFILES\Rime"
     ${Endif}
   ${Endif}
-skip:
+install_dir_ready:
+  ; Detect an existing installation in either registry view.
+  SetRegView 32
   ReadRegStr $R0 HKLM \
   "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel" \
   "UninstallString"
-  StrCmp $R0 "" done
-
+  StrCmp $R0 "" try_uninstall_64 upgrade_detected
+try_uninstall_64:
+  SetRegView 64
+  ReadRegStr $R0 HKLM \
+  "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel" \
+  "UninstallString"
+  SetRegView 32
+  StrCmp $R0 "" done upgrade_detected
+upgrade_detected:
   StrCpy $0 "Upgrade"
   IfSilent uninst 0
   MessageBox MB_OKCANCEL|MB_ICONINFORMATION "$(CONFIRMATION)" IDOK uninst
   Abort
 
 uninst:
-  ; Backup data directory from previous installation, user files may exist
+  ; Back up the shared program data. The user directory (including stats.json)
+  ; is outside $R1 and is never removed during an upgrade.
+  SetRegView 32
   ReadRegStr $R1 HKLM SOFTWARE\Rime\Weasel "WeaselRoot"
-  StrCmp $R1 "" call_uninstaller
+  StrCmp $R1 "" try_root_for_uninstall_64 root_for_uninstall_ready
+try_root_for_uninstall_64:
+  SetRegView 64
+  ReadRegStr $R1 HKLM SOFTWARE\Rime\Weasel "WeaselRoot"
+  SetRegView 32
+  StrCmp $R1 "" upgrade_uninstall_failed root_for_uninstall_ready
+root_for_uninstall_ready:
+  RMDir /r $TEMP\weasel-backup
   IfFileExists $R1\data\*.* 0 call_uninstaller
   CreateDirectory $TEMP\weasel-backup
   CopyFiles $R1\data\*.* $TEMP\weasel-backup
 
 call_uninstaller:
   ExecWait '"$R1\WeaselServer.exe" /quit'
-  ExecWait '"$R1\WeaselSetup.exe" /u'
-  ; Remove registry keys
+  IfFileExists "$R1\WeaselSetup.exe" 0 upgrade_uninstall_failed
+  ExecWait '"$R1\WeaselSetup.exe" /u' $2
+  ${If} $2 == 2
+    StrCpy $4 "Reload"
+  ${ElseIf} $2 != 0
+    GoTo upgrade_uninstall_failed
+  ${EndIf}
+  GoTo upgrade_uninstall_done
+upgrade_uninstall_failed:
+  RMDir /r $TEMP\weasel-backup
+  MessageBox MB_OK|MB_ICONSTOP "$(UPGRADEUNINSTALLFAILED)"
+  Abort
+upgrade_uninstall_done:
+  ; Remove old registration from both views, then keep the installer on 32-bit
+  ; view because WeaselSetup.exe writes its metadata there.
+  SetRegView 32
   DeleteRegKey HKLM SOFTWARE\Rime
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
-  ; don't redirect on 64 bit system for auto run setting
-  ${If} ${IsNativeARM64}
-    SetRegView 64
-  ${ElseIf} ${IsNativeAMD64}
-    SetRegView 64
-  ${Endif}
   DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselServer"
-  ; recover back to 32bit view
+  SetRegView 64
+  DeleteRegKey HKLM SOFTWARE\Rime
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
+  DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselServer"
   SetRegView 32
   ; Remove files and uninstaller
   Delete  "$R1\data\opencc\*.*"
@@ -187,8 +249,6 @@ call_uninstaller:
   SetShellVarContext all
   Delete  "$SMPROGRAMS\$(DISPLAYNAME)\*.*"
   RMDir  "$SMPROGRAMS\$(DISPLAYNAME)"
-  ; Prompt reboot
-  SetRebootFlag true
   Sleep 800
 
 done:
@@ -305,7 +365,13 @@ program_files:
   IfErrors +2 0
   StrCpy $R2 "/t"
 
-  ExecWait '"$INSTDIR\WeaselSetup.exe" $R2'
+  ExecWait '"$INSTDIR\WeaselSetup.exe" $R2' $3
+  ${If} $3 == 2
+    StrCpy $4 "Reload"
+  ${ElseIf} $3 != 0
+    MessageBox MB_OK|MB_ICONSTOP "$(INSTALLTSFFAILED)"
+    Abort
+  ${EndIf}
 
   ; Write the uninstall keys for Windows
   WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayName" "$(DISPLAYNAME)"
@@ -348,10 +414,9 @@ program_files:
   EnableAutoCheckUpdate:
   WriteRegStr HKCU "Software\Rime\Weasel\Updates" "CheckForUpdates" "1"
   end:
+  StrCmp $4 "Reload" 0 +2
+  MessageBox MB_OK|MB_ICONINFORMATION "$(RELOADAPPS)"
 
-  ; Prompt reboot
-  StrCmp $0 "Upgrade" 0 +2
-  SetRebootFlag true
 
 SectionEnd
 
@@ -381,7 +446,18 @@ Section "Uninstall"
 
   ExecWait '"$INSTDIR\WeaselServer.exe" /quit'
 
-  ExecWait '"$INSTDIR\WeaselSetup.exe" /u'
+  IfFileExists "$INSTDIR\WeaselSetup.exe" 0 uninstall_tsf_failed
+  ExecWait '"$INSTDIR\WeaselSetup.exe" /u' $0
+  ${If} $0 == 2
+    SetRebootFlag true
+  ${ElseIf} $0 != 0
+    GoTo uninstall_tsf_failed
+  ${EndIf}
+  GoTo uninstall_tsf_done
+uninstall_tsf_failed:
+  MessageBox MB_OK|MB_ICONSTOP "$(UNINSTALLTSFFAILED)"
+  Abort
+uninstall_tsf_done:
 
   ; Remove registry keys
   DeleteRegKey HKLM SOFTWARE\Rime
@@ -408,7 +484,5 @@ Section "Uninstall"
   Delete  "$SMPROGRAMS\$(DISPLAYNAME)\*.*"
   RMDir  "$SMPROGRAMS\$(DISPLAYNAME)"
 
-  ; Prompt reboot
-  SetRebootFlag true
 
 SectionEnd

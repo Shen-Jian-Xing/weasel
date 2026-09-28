@@ -29,13 +29,18 @@ typedef HRESULT(WINAPI* PTF_INSTALLLAYOUTORTIP)(LPCWSTR psz, DWORD dwFlags);
   L"SOFTWARE\\Microsoft\\Windows\\Windows Error " \
   L"Reporting\\LocalDumps\\WeaselServer.exe"
 
+// Exit code 2 means the active TSF DLL was moved aside and cleanup is pending
+// until reboot. The installer uses it instead of forcing every upgrade to reboot.
+static bool g_pending_reboot = false;
+
 BOOL copy_file(const std::wstring& src, const std::wstring& dest) {
   BOOL ret = CopyFile(src.c_str(), dest.c_str(), FALSE);
   if (!ret) {
     for (int i = 0; i < 10; ++i) {
       std::wstring old = dest + L".old." + std::to_wstring(i);
       if (MoveFileEx(dest.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        MoveFileEx(old.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+        if (MoveFileEx(old.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT))
+          g_pending_reboot = true;
         break;
       }
     }
@@ -47,10 +52,14 @@ BOOL copy_file(const std::wstring& src, const std::wstring& dest) {
 BOOL delete_file(const std::wstring& file) {
   BOOL ret = DeleteFile(file.c_str());
   if (!ret) {
+    if (GetLastError() == ERROR_FILE_NOT_FOUND)
+      return TRUE;
     for (int i = 0; i < 10; ++i) {
       std::wstring old = file + L".old." + std::to_wstring(i);
       if (MoveFileEx(file.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        MoveFileEx(old.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+        if (!MoveFileEx(old.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT))
+          return FALSE;
+        g_pending_reboot = true;
         return TRUE;
       }
     }
@@ -255,7 +264,8 @@ int uninstall_ime_file(const std::wstring& ext,
   std::wstring imePath(path);
   imePath += L"\\weasel" + ext;
   retval += func(imePath, false, false, false, profile, silent);
-  delete_file(imePath);
+  if (!delete_file(imePath))
+    retval = 1;
   if (is_wow64()) {
     retval += func(imePath, false, true, false, profile, silent);
     PVOID OldValue = NULL;
@@ -270,19 +280,23 @@ int uninstall_ime_file(const std::wstring& ext,
       if (get_wow_arm32_system_dir(sysarm32, _countof(sysarm32)) > 0) {
         std::wstring imePathARM32 = std::wstring(sysarm32) + L"\\weasel" + ext;
         retval += func(imePathARM32, false, true, true, profile, silent);
-        delete_file(imePathARM32);
+        if (!delete_file(imePathARM32))
+          retval = 1;
       }
 
       std::wstring imePathX64 = imePath;
       ireplace_last(imePathX64, ext, L"x64" + ext);
-      delete_file(imePathX64);
+      if (!delete_file(imePathX64))
+        retval = 1;
 
       std::wstring imePathARM64 = imePath;
       ireplace_last(imePathARM64, ext, L"ARM64" + ext);
-      delete_file(imePathARM64);
+      if (!delete_file(imePathARM64))
+        retval = 1;
     }
 
-    delete_file(imePath);
+    if (!delete_file(imePath))
+      retval = 1;
     if (Wow64RevertWow64FsRedirection(OldValue) == FALSE) {
       MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRRECOVERFSREDIRECT,
                             IDS_STR_UNINSTALL_FAILED, MB_ICONERROR | MB_OK);
@@ -362,7 +376,11 @@ int register_text_service(const std::wstring& tsf_path,
   shExInfo.hInstApp = 0;
   if (ShellExecuteExW(&shExInfo)) {
     WaitForSingleObject(shExInfo.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(shExInfo.hProcess, &exit_code);
     CloseHandle(shExInfo.hProcess);
+    if (exit_code != 0)
+      return 1;
   } else {
     WCHAR msg[100];
     CString str;
@@ -385,6 +403,8 @@ int install(const std::wstring& profile, bool silent) {
 
   retval += install_ime_file(ime_src_path, L".dll", profile, silent,
                              &register_text_service);
+  if (retval)
+    return 1;
 
   // 写注册表
   WCHAR drive[_MAX_DRIVE];
@@ -459,13 +479,10 @@ int install(const std::wstring& profile, bool silent) {
   SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpCount", 10,
                  REG_DWORD, true);
 
-  if (retval)
-    return 1;
-
   MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_INSTALL_SUCCESS_INFO,
                         IDS_STR_INSTALL_SUCCESS_CAP,
                         MB_ICONINFORMATION | MB_OK);
-  return 0;
+  return g_pending_reboot ? 2 : 0;
 }
 
 int uninstall(bool silent) {
@@ -527,7 +544,7 @@ int uninstall(bool silent) {
   MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_UNINSTALL_SUCCESS_INFO,
                         IDS_STR_UNINSTALL_SUCCESS_CAP,
                         MB_ICONINFORMATION | MB_OK);
-  return 0;
+  return g_pending_reboot ? 2 : 0;
 }
 
 bool has_installed() {
