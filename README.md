@@ -9,6 +9,21 @@
 [![Build status](https://github.com/rime/weasel/actions/workflows/commit-ci.yml/badge.svg)](https://github.com/rime/weasel/actions/workflows/commit-ci.yml)
 [![GitHub Tag](https://img.shields.io/github/tag/rime/weasel.svg)](https://github.com/rime/weasel)
 
+> **本仓库为非官方修改版（Fork）**
+>
+> 本仓库由 [bluedream2021](https://github.com/bluedream2021) 基于 [rime/weasel](https://github.com/rime/weasel) 修改而成，
+> 与 Rime 官方项目无关，亦不代表其立场。修改日期：2026 年 9 月。原始代码版权归 Rime 项目及各位贡献者所有。
+>
+> **主要修改：**
+>
+> - **输入统计**：按天记录击键次数与上屏字符数，支持「今天 / 近 7 天 / 按月 / 按年 / 总计」查看；数据保存于用户目录的 `stats.json`，可从托盘菜单打开统计窗口（`WeaselDeployer.exe /stats`）。
+> - **键盘设置**：图形界面配置中英切换键位与样式、功能快捷键（简繁转换 / 中英切换 / 全角切换 / 切换下一方案）、默认字形（简 / 繁），写入 `default.custom.yaml` 与 `user.yaml`。
+> - **语言栏与托盘**：默认显示小狼毫托盘图标（`weasel.yaml` 中 `display_tray_icon: true`）；不再于通知区域重复显示 TSF 语言栏图标。
+> - **构建适配**：无需安装 MFC 即可编译资源（新增 `include/afxres.h`）；修复中文用户名下日志目录创建失败的问题；`cscript //E:JScript` 兼容性修复；构建补丁见 [`patches/`](patches/)。
+> - **安装器增强**：升级时保护用户数据、无需重启 Windows 即可完成升级、完善卸载出错处理。
+>
+> 本修改版继续以 **GPLv3** 授权（见 [LICENSE.txt](LICENSE.txt)）；修改部分版权归 bluedream2021 所有，同样以 GPLv3 发布。
+
 授權條款：GPLv3
 
 項目主頁：https://rime.im
