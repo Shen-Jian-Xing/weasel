@@ -192,7 +192,7 @@ set WEASEL_PROJECT_PROPERTIES=BOOST_ROOT^
   PRODUCT_VERSION^
   FILE_VERSION
 
-cscript.exe render.js weasel.props %WEASEL_PROJECT_PROPERTIES%
+cscript.exe //E:JScript render.js weasel.props %WEASEL_PROJECT_PROPERTIES%
 
 del msbuild*.log
 
