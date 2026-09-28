@@ -11,6 +11,7 @@
 #include <vector>
 #include <regex>
 #include <rime_api.h>
+#include "InputStats.h"
 
 #define TRANSPARENT_COLOR 0x00000000
 #define ARGB2ABGR(value)                                 \
@@ -98,7 +99,10 @@ void RimeWithWeaselHandler::_Setup() {
   weasel_traits.distribution_code_name = WEASEL_CODE_NAME;
   weasel_traits.distribution_version = WEASEL_VERSION;
   weasel_traits.app_name = "rime.weasel";
-  std::string log_dir = WeaselLogPath().u8string();
+  // glog（librime 的日志库）在 Windows 上用 ANSI open() 打开日志文件，
+  // 若传入 UTF-8 路径，含中文用户名（非 ASCII）时会创建失败。
+  // 故此处用 ACP 编码（glog 期望的本地编码）。
+  std::string log_dir = wtoacp(WeaselLogPath().wstring());
   weasel_traits.log_dir = log_dir.c_str();
   rime_api->setup(&weasel_traits);
   rime_api->set_notification_handler(&RimeWithWeaselHandler::OnNotify, this);
@@ -116,6 +120,9 @@ void RimeWithWeaselHandler::Initialize() {
     m_disabled = true;
     rime_api->join_maintenance_thread();
   }
+
+  // 输入统计：载入历史数据
+  weasel::InputStats::Instance().Load();
 
   RimeConfig config = {NULL};
   if (rime_api->config_open("weasel", &config)) {
@@ -151,6 +158,8 @@ void RimeWithWeaselHandler::Finalize() {
   m_disabled = true;
   m_session_status_map.clear();
   LOG(INFO) << "Finalizing la rime.";
+  // 输入统计：退出前落盘（兜底）
+  weasel::InputStats::Instance().Save();
   rime_api->finalize();
 }
 
@@ -268,6 +277,9 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
              << ", mask = " << keyEvent.mask << ", ipc_id = " << ipc_id;
   if (m_disabled)
     return FALSE;
+  // 输入统计：只计按键按下（排除按键释放，避免双倍计数）
+  if (!(keyEvent.mask & ibus::Modifier::RELEASE_MASK))
+    weasel::InputStats::Instance().AddKeystroke();
   RimeSessionId session_id = to_session_id(ipc_id);
   Bool handled = rime_api->process_key(session_id, keyEvent.keycode,
                                        expand_ibus_modifier(keyEvent.mask));
@@ -749,6 +761,16 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
   RIME_STRUCT(RimeCommit, commit);
   if (rime_api->get_commit(session_id, &commit)) {
     actions.push_back("commit");
+    // 输入统计：累计本次上屏的字符数（按 UTF-8 码点计，汉字/标点各 1）
+    if (commit.text) {
+      unsigned long long n = 0;
+      for (const unsigned char* p = (const unsigned char*)commit.text; *p;
+           ++p) {
+        if ((*p & 0xC0) != 0x80)  // 非 UTF-8 续字节 => 一个码点
+          ++n;
+      }
+      weasel::InputStats::Instance().AddChars(n);
+    }
     std::wstring commit_text_w = escape_string(u8tow(commit.text));
     body.append(L"commit=").append(commit_text_w).append(L"\n");
     rime_api->free_commit(&commit);

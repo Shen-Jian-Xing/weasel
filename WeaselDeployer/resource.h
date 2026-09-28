@@ -11,6 +11,8 @@
 #define IDD_STYLE_SETTING               130
 #define IDI_DEPLOY                      131
 #define IDD_DICT_MANAGEMENT             132
+#define IDD_KEYBOARD_SETTING            135
+#define IDD_STATS                       136
 #define IDS_STR_WEASEL                  133
 #define IDS_STR_SAD                     134
 #define IDS_STR_HAPPY                   135
@@ -50,6 +52,19 @@
 #define IDC_RESTORE                     1009
 #define IDC_EXPORT                      1010
 #define IDC_IMPORT                      1011
+#define IDC_KB_SHIFT_L                  1012
+#define IDC_KB_SHIFT_R                  1013
+#define IDC_KB_CTRL_L                   1014
+#define IDC_KB_CTRL_R                   1015
+#define IDC_KB_CAPS_LOCK                1016
+#define IDC_KB_SCRIPT_HANS              1017
+#define IDC_KB_SCRIPT_HANT              1018
+#define IDC_KB_FN_SCRIPT                1019
+#define IDC_KB_FN_ASCII                 1020
+#define IDC_KB_FN_SHAPE                 1021
+#define IDC_KB_FN_SCHEMA                1022
+#define IDC_STATS_TEXT                  1023
+#define IDC_STATS_OPEN_FILE             1024
 #define IDC_STATIC1                     -1
 
 // Next default values for new objects
@@ -57,9 +72,9 @@
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NO_MFC                     1
-#define _APS_NEXT_RESOURCE_VALUE        135
+#define _APS_NEXT_RESOURCE_VALUE        137
 #define _APS_NEXT_COMMAND_VALUE         32771
-#define _APS_NEXT_CONTROL_VALUE         1012
+#define _APS_NEXT_CONTROL_VALUE         1025
 #define _APS_NEXT_SYMED_VALUE           110
 #endif
 #endif

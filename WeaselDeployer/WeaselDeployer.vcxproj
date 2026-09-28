@@ -188,6 +188,9 @@
   <ItemGroup>
     <ClInclude Include="Configurator.h" />
     <ClInclude Include="DictManagementDialog.h" />
+    <ClInclude Include="StatsDialog.h" />
+    <ClInclude Include="KeyboardSettings.h" />
+    <ClInclude Include="KeyboardSettingsDialog.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="SwitcherSettingsDialog.h" />
@@ -200,6 +203,9 @@
     <ClCompile Include="..\RimeWithWeasel\WeaselUtility.cpp" />
     <ClCompile Include="Configurator.cpp" />
     <ClCompile Include="DictManagementDialog.cpp" />
+    <ClCompile Include="StatsDialog.cpp" />
+    <ClCompile Include="KeyboardSettings.cpp" />
+    <ClCompile Include="KeyboardSettingsDialog.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>

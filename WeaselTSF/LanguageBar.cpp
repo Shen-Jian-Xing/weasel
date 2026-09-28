@@ -102,8 +102,8 @@ STDMETHODIMP_(ULONG) CLangBarItemButton::Release() {
 STDMETHODIMP CLangBarItemButton::GetInfo(TF_LANGBARITEMINFO* pInfo) {
   pInfo->clsidService = c_clsidTextService;
   pInfo->guidItem = _guid;
-  pInfo->dwStyle = TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_BTN_MENU |
-                   TF_LBI_STYLE_SHOWNINTRAY;
+  // Do not expose the TSF language-bar item as a second notification-area icon.
+  pInfo->dwStyle = TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_BTN_MENU;
   pInfo->ulSort = 1;
   lstrcpyW(pInfo->szDescription, L"WeaselTSF Button");
   return S_OK;
@@ -380,6 +380,8 @@ BOOL WeaselTSF::_InitLanguageBar() {
     return FALSE;
   }
 
+  // Keep the TSF item registered for mode/status synchronization. The item is
+  // not exposed in the notification area (see GetInfo()).
   _pLangBarButton->Show(TRUE);
   fRet = TRUE;
 

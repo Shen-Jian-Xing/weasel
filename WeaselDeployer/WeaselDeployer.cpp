@@ -74,6 +74,7 @@ static int Run(LPTSTR lpCmdLine) {
                  L"/deploy		- Update Workspace\n"
                  L"/dict		- Manage dictionary\n"
                  L"/sync		- Sync user data\n"
+                 L"/stats		- Show input statistics\n"
                  L"/install		- Install Weasel (Initial deployment)",
                  L"Weasel Deployer", MB_ICONINFORMATION | MB_OK);
     }
@@ -93,6 +94,11 @@ static int Run(LPTSTR lpCmdLine) {
   bool sync_user_dict = !wcscmp(L"/sync", lpCmdLine);
   if (sync_user_dict) {
     return configurator.SyncUserData();
+  }
+
+  bool statistics = !wcscmp(L"/stats", lpCmdLine);
+  if (statistics) {
+    return configurator.Statistics();
   }
 
   bool installing = !wcscmp(L"/install", lpCmdLine);

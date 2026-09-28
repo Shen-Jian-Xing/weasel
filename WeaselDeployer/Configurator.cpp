@@ -4,7 +4,10 @@
 #include "SwitcherSettingsDialog.h"
 #include "UIStyleSettings.h"
 #include "UIStyleSettingsDialog.h"
+#include "KeyboardSettings.h"
+#include "KeyboardSettingsDialog.h"
 #include "DictManagementDialog.h"
+#include "StatsDialog.h"
 #include <WeaselConstants.h>
 #include <WeaselIPC.h>
 #include <WeaselIPCData.h>
@@ -43,7 +46,9 @@ void Configurator::Initialize() {
   weasel_traits.distribution_code_name = WEASEL_CODE_NAME;
   weasel_traits.distribution_version = WEASEL_VERSION;
   weasel_traits.app_name = "rime.weasel";
-  std::string log_dir = WeaselLogPath().u8string();
+  // glog 在 Windows 用 ANSI open() 打开日志文件，需传 ACP 编码路径
+  // （UTF-8 路径在中文用户名下会导致日志文件创建失败）
+  std::string log_dir = wtoacp(WeaselLogPath().wstring());
   weasel_traits.log_dir = log_dir.c_str();
   RimeApi* rime_api = rime_get_api();
   assert(rime_api);
@@ -82,6 +87,21 @@ static bool configure_ui(RimeLeversApi* api,
   return false;
 }
 
+static bool configure_keyboard(RimeLeversApi* api,
+                              KeyboardSettings* keyboard_settings,
+                              bool* reconfigured) {
+  RimeCustomSettings* settings = keyboard_settings->settings();
+  if (!api->load_settings(settings))
+    return false;
+  KeyboardSettingsDialog dialog(keyboard_settings);
+  if (dialog.DoModal() == IDOK) {
+    if (api->save_settings(settings))
+      *reconfigured = true;
+    return true;
+  }
+  return false;
+}
+
 int Configurator::Run(bool installing) {
   RimeModule* levers = rime_get_api()->find_module("levers");
   if (!levers)
@@ -94,16 +114,21 @@ int Configurator::Run(bool installing) {
 
   RimeSwitcherSettings* switcher_settings = api->switcher_settings_init();
   UIStyleSettings ui_style_settings;
+  KeyboardSettings keyboard_settings;
 
   bool skip_switcher_settings =
       installing && !api->is_first_run((RimeCustomSettings*)switcher_settings);
   bool skip_ui_style_settings =
       installing && !api->is_first_run(ui_style_settings.settings());
+  bool skip_keyboard_settings =
+      installing && !api->is_first_run(keyboard_settings.settings());
 
   (skip_switcher_settings ||
    configure_switcher(api, switcher_settings, &reconfigured)) &&
       (skip_ui_style_settings ||
-       configure_ui(api, &ui_style_settings, &reconfigured));
+       configure_ui(api, &ui_style_settings, &reconfigured)) &&
+      (skip_keyboard_settings ||
+       configure_keyboard(api, &keyboard_settings, &reconfigured));
 
   api->custom_settings_destroy((RimeCustomSettings*)switcher_settings);
 
@@ -192,6 +217,13 @@ int Configurator::DictManagement() {
     LOG(INFO) << "Resuming service.";
     client.EndMaintenance();
   }
+  return 0;
+}
+
+int Configurator::Statistics() {
+  // 只读展示：直接读 stats.json，无需维护模式，也不改动任何配置
+  StatsDialog dlg;
+  dlg.DoModal();
   return 0;
 }
 
