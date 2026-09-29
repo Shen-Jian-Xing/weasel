@@ -154,6 +154,37 @@ try_install_dir_64:
   GoTo install_dir_ready
 try_root_64:
   ReadRegStr $R0 HKLM "Software\Rime\Weasel" "WeaselRoot"
+  StrCmp $R0 "" try_uninstall_entry
+  ${GetParent} "$R0" $INSTDIR
+  StrCmp $INSTDIR "" use_default_install_dir install_dir_ready
+try_uninstall_entry:
+  ; Rime\Weasel is missing but a stale uninstall entry exists (for example
+  ; after WeaselSetup.exe /u removed Rime\Weasel while the NSIS uninstall
+  ; entry survived). Recover the previous location from the uninstall command
+  ; so the upgrade still happens in place instead of aborting.
+  SetRegView 32
+  ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel" "UninstallString"
+  StrCmp $R0 "" try_uninstall_entry_64
+  Goto unquote_uninstall_entry
+try_uninstall_entry_64:
+  SetRegView 64
+  ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel" "UninstallString"
+  SetRegView 32
+  StrCmp $R0 "" use_default_install_dir
+unquote_uninstall_entry:
+  StrCpy $0 $R0 1
+  StrCmp $0 '"' unquote_entry_front
+  Goto unquote_entry_back
+unquote_entry_front:
+  StrCpy $R0 $R0 "" 1
+unquote_entry_back:
+  StrCpy $0 $R0 1 -1
+  StrCmp $0 '"' unquote_entry_tail
+  Goto unquote_entry_done
+unquote_entry_tail:
+  StrCpy $R0 $R0 -1
+unquote_entry_done:
+  ${GetParent} "$R0" $R0
   StrCmp $R0 "" use_default_install_dir
   ${GetParent} "$R0" $INSTDIR
   StrCmp $INSTDIR "" use_default_install_dir install_dir_ready
@@ -204,7 +235,43 @@ try_root_for_uninstall_64:
   SetRegView 64
   ReadRegStr $R1 HKLM SOFTWARE\Rime\Weasel "WeaselRoot"
   SetRegView 32
-  StrCmp $R1 "" upgrade_uninstall_failed root_for_uninstall_ready
+  StrCmp $R1 "" derive_root_for_uninstall root_for_uninstall_ready
+derive_root_for_uninstall:
+  ; Rime\Weasel may be gone while the NSIS uninstall entry survived; recover
+  ; the previous root from the uninstall string.
+  ReadRegStr $R1 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel" "UninstallString"
+  StrCmp $R1 "" derive_root_for_uninstall_64
+  Goto unquote_root_for_uninstall
+derive_root_for_uninstall_64:
+  SetRegView 64
+  ReadRegStr $R1 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel" "UninstallString"
+  SetRegView 32
+  StrCmp $R1 "" skip_missing_root
+unquote_root_for_uninstall:
+  StrCpy $0 $R1 1
+  StrCmp $0 '"' unquote_root_front
+  Goto unquote_root_back
+unquote_root_front:
+  StrCpy $R1 $R1 "" 1
+unquote_root_back:
+  StrCpy $0 $R1 1 -1
+  StrCmp $0 '"' unquote_root_tail
+  Goto unquote_root_done
+unquote_root_tail:
+  StrCpy $R1 $R1 -1
+unquote_root_done:
+  ${GetParent} "$R1" $R1
+  StrCmp $R1 "" skip_missing_root
+  Goto root_for_uninstall_ready
+skip_missing_root:
+  ; No locatable previous version: drop the stale uninstall entry and continue
+  ; with a fresh install rather than blocking the user with an abort.
+  SetRegView 32
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
+  SetRegView 64
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
+  SetRegView 32
+  Goto done
 root_for_uninstall_ready:
   RMDir /r $TEMP\weasel-backup
   IfFileExists $R1\data\*.* 0 call_uninstaller
@@ -218,7 +285,15 @@ call_uninstaller:
   ${If} $2 == 2
     StrCpy $4 "Reload"
   ${ElseIf} $2 != 0
-    GoTo upgrade_uninstall_failed
+    ; The previous IME may already be gone while a stale NSIS uninstall entry
+    ; survives (e.g. WeaselSetup.exe /u removed Rime\Weasel and the TSF dll but
+    ; left Uninstall\Weasel behind, and then regsvr32 /u failed on the missing
+    ; dll). In that case the old uninstaller reports failure over already-removed
+    ; files; do not block the install over it. If any IME dll is still present,
+    ; keep treating it as a genuine failure.
+    IfFileExists "$WINDIR\System32\weasel.dll" upgrade_uninstall_failed
+    IfFileExists "$WINDIR\System32\weaselx64.dll" upgrade_uninstall_failed
+    IfFileExists "$WINDIR\SysWOW64\weasel.dll" upgrade_uninstall_failed
   ${EndIf}
   GoTo upgrade_uninstall_done
 upgrade_uninstall_failed:
@@ -417,24 +492,6 @@ program_files:
   StrCmp $4 "Reload" 0 +2
   MessageBox MB_OK|MB_ICONINFORMATION "$(RELOADAPPS)"
 
-
-SectionEnd
-
-; Optional section (can be disabled by the user)
-Section "Start Menu Shortcuts"
-  SetShellVarContext all
-  CreateDirectory "$SMPROGRAMS\$(DISPLAYNAME)"
-  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORMANUAL).lnk" "$INSTDIR\README.txt"
-  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORSETTING).lnk" "$INSTDIR\WeaselDeployer.exe" "" "$SYSDIR\shell32.dll" 21
-  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORDICT).lnk" "$INSTDIR\WeaselDeployer.exe" "/dict" "$SYSDIR\shell32.dll" 6
-  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORSYNC).lnk" "$INSTDIR\WeaselDeployer.exe" "/sync" "$SYSDIR\shell32.dll" 26
-  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORDEPLOY).lnk" "$INSTDIR\WeaselDeployer.exe" "/deploy" "$SYSDIR\shell32.dll" 144
-  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORSERVER).lnk" "$INSTDIR\WeaselServer.exe" "" "$INSTDIR\WeaselServer.exe" 0
-  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORUSERFOLDER).lnk" "$INSTDIR\WeaselServer.exe" "/userdir" "$SYSDIR\shell32.dll" 126
-  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORAPPFOLDER).lnk" "$INSTDIR\WeaselServer.exe" "/weaseldir" "$SYSDIR\shell32.dll" 19
-  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORUPDATER).lnk" "$INSTDIR\WeaselServer.exe" "/update" "$SYSDIR\shell32.dll" 13
-  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORSETUP).lnk" "$INSTDIR\WeaselSetup.exe" "" "$SYSDIR\shell32.dll" 162
-  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORUNINSTALL).lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\uninstall.exe" 0
 
 SectionEnd
 
