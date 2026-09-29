@@ -67,6 +67,15 @@ BOOL delete_file(const std::wstring& file) {
   return ret;
 }
 
+// Whether the given path exists as a regular file. Used to tell a genuine
+// unregister failure apart from regsvr32 failing on an already-removed module
+// (which exits with code 3 and must not fail the whole uninstall).
+static bool reg_file_exists(const std::wstring& path) {
+  DWORD attr = GetFileAttributesW(path.c_str());
+  return attr != INVALID_FILE_ATTRIBUTES &&
+         !(attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 typedef BOOL(WINAPI* PISWOW64P2)(HANDLE, USHORT*, USHORT*);
 BOOL is_arm64_machine() {
   PISWOW64P2 fnIsWow64Process2 = (PISWOW64P2)GetProcAddress(
@@ -263,11 +272,17 @@ int uninstall_ime_file(const std::wstring& ext,
   GetSystemDirectoryW(path, _countof(path));
   std::wstring imePath(path);
   imePath += L"\\weasel" + ext;
-  retval += func(imePath, false, false, false, profile, silent);
+  // regsvr32 /u returns non-zero (3 = file not found) when the module is
+  // already gone; ignore that either way, but still call func so the language
+  // profile is disabled.
+  const bool ime_existed = reg_file_exists(imePath);
+  if (func(imePath, false, false, false, profile, silent) != 0 && ime_existed)
+    retval = 1;
   if (!delete_file(imePath))
     retval = 1;
   if (is_wow64()) {
-    retval += func(imePath, false, true, false, profile, silent);
+    if (func(imePath, false, true, false, profile, silent) != 0 && ime_existed)
+      retval = 1;
     PVOID OldValue = NULL;
     if (Wow64DisableWow64FsRedirection(&OldValue) == FALSE) {
       MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRCANCELFSREDIRECT,
@@ -279,7 +294,10 @@ int uninstall_ime_file(const std::wstring& ext,
       WCHAR sysarm32[MAX_PATH];
       if (get_wow_arm32_system_dir(sysarm32, _countof(sysarm32)) > 0) {
         std::wstring imePathARM32 = std::wstring(sysarm32) + L"\\weasel" + ext;
-        retval += func(imePathARM32, false, true, true, profile, silent);
+        const bool arm32_existed = reg_file_exists(imePathARM32);
+        if (func(imePathARM32, false, true, true, profile, silent) != 0 &&
+            arm32_existed)
+          retval = 1;
         if (!delete_file(imePathARM32))
           retval = 1;
       }
