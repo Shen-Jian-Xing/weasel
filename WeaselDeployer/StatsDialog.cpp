@@ -23,6 +23,8 @@ namespace {
 struct Counters {
   unsigned long long keystrokes = 0;
   unsigned long long chars = 0;
+  unsigned long long speed_chars = 0;
+  unsigned long long active_milliseconds = 0;
 };
 
 bool ExtractNum(const std::string& line,
@@ -70,6 +72,8 @@ std::map<std::string, Counters> ReadDaily() {
       Counters c;
       ExtractNum(line, "keystrokes", &c.keystrokes);
       ExtractNum(line, "chars", &c.chars);
+      ExtractNum(line, "speed_chars", &c.speed_chars);
+      ExtractNum(line, "active_milliseconds", &c.active_milliseconds);
       daily[key] = c;
     }
   } catch (...) {
@@ -103,6 +107,31 @@ std::string Thousands(unsigned long long n) {
   }
   std::reverse(out.begin(), out.end());
   return out;
+}
+
+unsigned long long TypingSpeedPerMinute(const Counters& counters) {
+  if (counters.active_milliseconds == 0)
+    return 0;
+  const long double rate =
+      static_cast<long double>(counters.speed_chars) * 60000.0L /
+      static_cast<long double>(counters.active_milliseconds);
+  return static_cast<unsigned long long>(rate + 0.5L);
+}
+
+int FeedbackLevel(unsigned long long speed_per_minute) {
+  if (speed_per_minute < 20)
+    return 0;
+  if (speed_per_minute < 40)
+    return 1;
+  if (speed_per_minute < 60)
+    return 2;
+  if (speed_per_minute < 80)
+    return 3;
+  return 4;
+}
+
+bool HasEnoughTypingSample(const Counters& counters) {
+  return counters.active_milliseconds >= 10000 && counters.speed_chars >= 10;
 }
 
 std::vector<std::pair<std::string, Counters>> Aggregate(
@@ -141,6 +170,10 @@ struct Labels {
   const wchar_t* year;
   const wchar_t* close;
   const wchar_t* open_file;
+  const wchar_t* speed;
+  const wchar_t* speed_unit;
+  const wchar_t* speed_too_early;
+  const wchar_t* speed_feedback[5];
 };
 
 Labels GetLabels() {
@@ -148,18 +181,35 @@ Labels GetLabels() {
     return {L"[Weasel] Input Statistics",
             L"Keystrokes and committed characters only; no input content is stored",
             L"Today", L"All time", L"Last 7 days", L"keystrokes", L"chars",
-            L"Month", L"Year", L"Close", L"Open data file"};
+            L"Month", L"Year", L"Close", L"Open data file",
+            L"Today's speed", L"chars/min",
+            L"Type more to see your speed.",
+            {L"Keep going—you are building speed!",
+             L"Nice progress—keep it up!",
+             L"Nice work, you're at a common pace!",
+             L"Great—you are above the reference pace!",
+             L"Congratulations, lightning fast!"}};
   }
   if (IsTraditional()) {
     return {L"[小狼毫] 輸入統計",
             L"僅統計擊鍵與上屏字符，不記錄輸入內容",
             L"今天", L"累計", L"近 7 天", L"擊鍵", L"字",
-            L"按月", L"按年", L"關閉", L"打開數據文件"};
+            L"按月", L"按年", L"關閉", L"打開數據文件",
+            L"今日平均速度", L"字/分鐘",
+            L"多輸入一些文字，即可查看速度。",
+            {L"再接再厲，慢慢來就好", L"繼續保持，你正在進步",
+             L"不錯，達到常見水平", L"很棒，超過常見水平",
+             L"恭喜你，打字飛快！"}};
   }
   return {L"[小狼毫] 输入统计",
           L"仅统计击键与上屏字符，不记录输入内容",
           L"今天", L"累计", L"近 7 天", L"击键", L"字",
-          L"按月", L"按年", L"关闭", L"打开数据文件"};
+          L"按月", L"按年", L"关闭", L"打开数据文件",
+          L"今日平均速度", L"字/分钟",
+          L"多输入一些文字，即可查看速度。",
+          {L"再接再厉，慢慢来就好", L"继续保持，你正在进步",
+           L"不错，达到常见水平", L"很棒，超过常见水平",
+           L"恭喜你，打字飞快！"}};
 }
 
 COLORREF Rgb(BYTE r, BYTE g, BYTE b) { return RGB(r, g, b); }
@@ -297,22 +347,54 @@ void StatsDialog::DrawDashboard(HDC dc, const RECT& client) {
   rc = {left_value, summary.top + scale(29), width / 2 - scale(8),
         summary.top + scale(61)};
   Text(dc, number.c_str(), rc, text, font_large);
+
+  const std::wstring today_chars = Number(today.chars);
+  const std::wstring total_chars = Number(total.chars);
+  const std::wstring today_speed_chars = Number(today.speed_chars);
   number = Number(total.keystrokes);
   rc = {right_value, summary.top + scale(29), summary.right - cell_padding,
         summary.top + scale(61)};
   Text(dc, number.c_str(), rc, text, font_large);
 
-  std::wstring detail = std::wstring(labels.chars_unit) + L"  " + Number(today.chars);
+  std::wstring detail = std::wstring(labels.chars_unit) + L"  " + today_chars;
   rc = {left_value, summary.top + scale(61), width / 2 - scale(8),
         summary.bottom - scale(3)};
   Text(dc, detail.c_str(), rc, secondary, font_small);
-  detail = std::wstring(labels.chars_unit) + L"  " + Number(total.chars);
+  detail = std::wstring(labels.chars_unit) + L"  " + total_chars;
   rc = {right_value, summary.top + scale(61), summary.right - cell_padding,
         summary.bottom - scale(3)};
   Text(dc, detail.c_str(), rc, secondary, font_small);
+  const bool has_speed_sample = HasEnoughTypingSample(today);
+  const unsigned long long speed =
+      has_speed_sample ? TypingSpeedPerMinute(today) : 0;
+  const std::wstring speed_value = has_speed_sample
+      ? Number(speed) + L" " + labels.speed_unit
+      : L"—";
+  RECT speed_area = {margin, summary.bottom + scale(3), width - margin,
+                     summary.bottom + scale(47)};
+  HPEN speed_border = CreatePen(PS_SOLID, 1, rule);
+  HGDIOBJ old_speed_pen = SelectObject(dc, speed_border);
+  HGDIOBJ old_speed_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+  Rectangle(dc, speed_area.left, speed_area.top, speed_area.right,
+            speed_area.bottom);
+  SelectObject(dc, old_speed_brush);
+  SelectObject(dc, old_speed_pen);
+  DeleteObject(speed_border);
+  rc = {left_value, summary.bottom + scale(5), width - margin,
+        summary.bottom + scale(23)};
+  Text(dc, labels.speed, rc, secondary, font_small);
+  rc = {left_value + scale(125), summary.bottom + scale(5), width - margin,
+        summary.bottom + scale(23)};
+  Text(dc, speed_value.c_str(), rc, primary, font_medium);
+  const wchar_t* feedback = has_speed_sample
+      ? labels.speed_feedback[FeedbackLevel(speed)]
+      : labels.speed_too_early;
+  rc = {left_value, summary.bottom + scale(24), width - margin,
+        summary.bottom + scale(43)};
+  Text(dc, feedback, rc, has_speed_sample ? primary : muted, font_small);
 
   // Seven-day compact bar chart.
-  const int section_top = scale(145);
+  const int section_top = scale(175);
   rc = {margin, section_top, width - margin, section_top + scale(21)};
   Text(dc, labels.recent7, rc, text, font_medium);
   RECT unit_rc = {width - margin - scale(95), section_top,
@@ -321,7 +403,11 @@ void StatsDialog::DrawDashboard(HDC dc, const RECT& client) {
        DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
   const int chart_top = section_top + scale(27);
+  // Keep the overall chart footprint unchanged; carve a small band out of the
+  // bar area so every bar can carry its own value label right above its top.
+  const int value_band = scale(15);
   const int bar_area_height = scale(61);
+  const int max_bar_height = bar_area_height - value_band - scale(2);
   const int labels_top = chart_top + bar_area_height + scale(4);
   const int chart_bottom = chart_top + bar_area_height;
   std::vector<Counters> last7(7);
@@ -342,7 +428,7 @@ void StatsDialog::DrawDashboard(HDC dc, const RECT& client) {
     if (max_keystrokes > 0 && last7[i].keystrokes > 0) {
       bar_height = static_cast<int>(
           (static_cast<double>(last7[i].keystrokes) / max_keystrokes) *
-          (bar_area_height - scale(5)));
+          max_bar_height);
       bar_height = std::max(scale(3), bar_height);
     }
     const int center = margin + slot * i + slot / 2;
@@ -351,6 +437,14 @@ void StatsDialog::DrawDashboard(HDC dc, const RECT& client) {
                      center + (bar_width + 1) / 2, chart_bottom};
       Fill(dc, bar_rc, i == 6 ? today_bar : bar);
     }
+    // Per-bar value label, centered just above the bar top. Kept within this
+    // column's slot so adjacent labels can never overlap.
+    RECT value_rc = {margin + slot * i,
+                     chart_bottom - bar_height - value_band,
+                     margin + slot * (i + 1), chart_bottom - bar_height};
+    std::wstring value_label = Number(last7[i].keystrokes);
+    Text(dc, value_label.c_str(), value_rc, i == 6 ? primary : secondary,
+         font_small, DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
     std::wstring day_label;
     if (i == 6) {
       day_label = IsEnglish() ? L"Today" : L"今天";

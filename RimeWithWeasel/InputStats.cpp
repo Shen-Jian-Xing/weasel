@@ -1,9 +1,10 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "InputStats.h"
 
 #include <algorithm>
 #include <ctime>
 #include <fstream>
+#include <limits>
 #include <sstream>
 
 #include <logging.h>
@@ -13,20 +14,7 @@ namespace weasel {
 
 namespace {
 
-constexpr int kKeepYears = 3;  // 保留最近 3 年
-
-// 从 "YYYY-MM-DD" 求当天 0 点的时间戳偏移（用 std::tm）
-bool ParseDate(const std::string& ymd, std::tm* tm_out) {
-  if (ymd.size() < 10)
-    return false;
-  std::tm tm = {};
-  tm.tm_year = std::atoi(ymd.substr(0, 4).c_str()) - 1900;
-  tm.tm_mon = std::atoi(ymd.substr(5, 2).c_str()) - 1;
-  tm.tm_mday = std::atoi(ymd.substr(8, 2).c_str());
-  tm.tm_hour = 12;  // 用正午避开 DST 边界
-  *tm_out = tm;
-  return true;
-}
+constexpr int kKeepYears = 3;  // Keep the most recent three years.
 
 std::string FormatDate(const std::tm& tm) {
   char buf[32] = {0};
@@ -34,18 +22,18 @@ std::string FormatDate(const std::tm& tm) {
   return std::string(buf);
 }
 
-// 今天往前推 delta 天的日期字符串
+// Return the local date key for today minus delta_days.
 std::string DateOffset(int delta_days) {
   std::time_t now = std::time(nullptr);
   std::tm tm = {};
   localtime_s(&tm, &now);
   tm.tm_hour = 12;
   tm.tm_mday -= delta_days;
-  std::mktime(&tm);  // 规范化
+  std::mktime(&tm);
   return FormatDate(tm);
 }
 
-// 极简 JSON 转义（本文件只存 ASCII 键和数字，几乎用不到，留作健壮性）
+// Escape strings used as JSON keys.
 std::string JsonEscape(const std::string& s) {
   std::string out;
   out.reserve(s.size() + 8);
@@ -73,7 +61,7 @@ std::string JsonEscape(const std::string& s) {
   return out;
 }
 
-// 从一段文本中读取指定 key 的整数值（极简解析，只认本文件结构）
+// Read an unsigned integer field from the line-oriented stats JSON.
 bool ExtractNumber(const std::string& text,
                    size_t start,
                    const std::string& key,
@@ -99,7 +87,7 @@ bool ExtractNumber(const std::string& text,
 
 }  // namespace
 
-// ---------------- 单例 ----------------
+// ---------------- Singleton ----------------
 
 InputStats& InputStats::Instance() {
   static InputStats instance;
@@ -126,13 +114,36 @@ std::string InputStats::TodayKey() {
   return FormatDate(tm);
 }
 
-// ---------------- 采集 ----------------
+// ---------------- Event collection ----------------
 
 void InputStats::AddKeystroke() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    daily_[TodayKey()].keystrokes += 1;
+    const auto now = std::chrono::steady_clock::now();
+    const std::string today = TodayKey();
+    auto& counters = daily_[today];
+    ++counters.keystrokes;
+    if (has_last_key_down_ && last_key_date_ == today) {
+      const auto elapsed = now - last_key_down_;
+      if (elapsed > std::chrono::steady_clock::duration::zero() &&
+          elapsed <= kMaxInputGap) {
+        const auto milliseconds =
+            std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
+                .count();
+        if (milliseconds > 0 &&
+            static_cast<unsigned long long>(milliseconds) <=
+                (std::numeric_limits<unsigned long long>::max)() -
+                    counters.active_milliseconds) {
+          counters.active_milliseconds +=
+              static_cast<unsigned long long>(milliseconds);
+        }
+      }
+    }
+    last_key_down_ = now;
+    last_key_date_ = today;
+    has_last_key_down_ = true;
     dirty_ = true;
+    ++data_generation_;
   }
   MaybeAutoSave();
 }
@@ -142,8 +153,30 @@ void InputStats::AddChars(unsigned long long n) {
     return;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    daily_[TodayKey()].chars += n;
+    auto& chars = daily_[TodayKey()].chars;
+    chars = n > (std::numeric_limits<unsigned long long>::max)() - chars
+                ? (std::numeric_limits<unsigned long long>::max)()
+                : chars + n;
     dirty_ = true;
+    ++data_generation_;
+  }
+  MaybeAutoSave();
+}
+
+// Continue the all-time chars metric while maintaining a versioned baseline for
+// reliable speed samples introduced in this build.
+void InputStats::AddSpeedChars(unsigned long long n) {
+  if (n == 0)
+    return;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto& speed_chars = daily_[TodayKey()].speed_chars;
+    speed_chars =
+        n > (std::numeric_limits<unsigned long long>::max)() - speed_chars
+            ? (std::numeric_limits<unsigned long long>::max)()
+            : speed_chars + n;
+    dirty_ = true;
+    ++data_generation_;
   }
   MaybeAutoSave();
 }
@@ -153,117 +186,153 @@ void InputStats::MaybeAutoSave() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!dirty_)
       return;
-    std::time_t now = std::time(nullptr);
-    if (last_save_time_ != 0 && now - last_save_time_ < kAutoSaveIntervalSec)
+    const std::time_t now = std::time(nullptr);
+    if (last_save_time_ != 0 && now >= last_save_time_ &&
+        now - last_save_time_ < kAutoSaveIntervalSec)
       return;
   }
-  Save();
+  SaveInternal(false);
 }
 
-// ---------------- 持久化 ----------------
+// ---------------- Persistence ----------------
 
 bool InputStats::Load() {
-  std::wstring path = StatsFilePathW();
+  const std::wstring path = StatsFilePathW();
   if (path.empty())
     return false;
   std::ifstream ifs(path.c_str(), std::ios::binary);
   if (!ifs.is_open())
-    return true;  // 文件不存在：视为空，正常
+    return true;  // Missing file is a normal empty state.
 
   std::ostringstream ss;
   ss << ifs.rdbuf();
-  std::string text = ss.str();
+  const std::string text = ss.str();
+  std::map<std::string, StatsCounters> loaded_daily;
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  daily_.clear();
-
-  // 逐行解析写入时产生的行式 JSON：
-  //   "2026-09-24": { "keystrokes": 1024, "chars": 380 }
+  // Optional fields preserve compatibility with older stats.json files.
   std::istringstream lines(text);
   std::string line;
   while (std::getline(lines, line)) {
-    // 快速定位日期键
-    size_t q1 = line.find('"');
+    const size_t q1 = line.find('"');
     if (q1 == std::string::npos)
       continue;
-    size_t q2 = line.find('"', q1 + 1);
+    const size_t q2 = line.find('"', q1 + 1);
     if (q2 == std::string::npos)
       continue;
-    std::string key = line.substr(q1 + 1, q2 - q1 - 1);
-    // 日期键格式校验：YYYY-MM-DD
+    const std::string key = line.substr(q1 + 1, q2 - q1 - 1);
     if (!(key.size() == 10 && key[4] == '-' && key[7] == '-'))
       continue;
-    StatsCounters c;
-    unsigned long long v = 0;
-    if (ExtractNumber(line, q2, "keystrokes", &v))
-      c.keystrokes = v;
-    if (ExtractNumber(line, q2, "chars", &v))
-      c.chars = v;
-    daily_[key] = c;
+    StatsCounters counters;
+    unsigned long long value = 0;
+    if (ExtractNumber(line, q2, "keystrokes", &value))
+      counters.keystrokes = value;
+    if (ExtractNumber(line, q2, "chars", &value))
+      counters.chars = value;
+    if (ExtractNumber(line, q2, "speed_chars", &value))
+      counters.speed_chars = value;
+    if (ExtractNumber(line, q2, "active_milliseconds", &value))
+      counters.active_milliseconds = value;
+    loaded_daily[key] = counters;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    daily_.swap(loaded_daily);
+    has_last_key_down_ = false;
+    last_key_date_.clear();
+    dirty_ = false;
+    ++data_generation_;
   }
   return true;
 }
 
-bool InputStats::Save() {
-  std::wstring path = StatsFilePathW();
+bool InputStats::Save() { return SaveInternal(true); }
+
+bool InputStats::SaveInternal(bool force) {
+  const std::wstring path = StatsFilePathW();
   if (path.empty())
     return false;
 
-  std::string content;
+  std::lock_guard<std::mutex> save_lock(save_mutex_);
+  std::map<std::string, StatsCounters> snapshot;
+  unsigned long long snapshot_generation = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    const std::time_t now = std::time(nullptr);
+    if (!force) {
+      if (!dirty_)
+        return true;
+      if (last_save_time_ != 0 && now >= last_save_time_ &&
+          now - last_save_time_ < kAutoSaveIntervalSec)
+        return true;
+    }
 
-    // 裁剪：只保留最近 kKeepYears 年
+    bool pruned = false;
     if (!daily_.empty()) {
-      std::string cutoff = DateOffset(kKeepYears * 365 + 1);
+      const std::string cutoff = DateOffset(kKeepYears * 365 + 1);
       for (auto it = daily_.begin(); it != daily_.end();) {
-        if (it->first < cutoff)
+        if (it->first < cutoff) {
           it = daily_.erase(it);
-        else
+          pruned = true;
+        } else {
           ++it;
+        }
       }
     }
-
-    std::ostringstream oss;
-    oss << "{\n  \"version\": 1,\n  \"daily\": {\n";
-    bool first = true;
-    for (const auto& kv : daily_) {
-      if (!first)
-        oss << ",\n";
-      first = false;
-      oss << "    \"" << JsonEscape(kv.first) << "\": { \"keystrokes\": "
-          << kv.second.keystrokes << ", \"chars\": " << kv.second.chars << " }";
-    }
-    oss << "\n  }\n}\n";
-    content = oss.str();
+    if (pruned)
+      ++data_generation_;
+    snapshot = daily_;
+    snapshot_generation = data_generation_;
   }
 
-  // 原子写：先写 .tmp，再改名
-  std::wstring tmp = path + L".tmp";
+  std::ostringstream oss;
+  oss << "{\n  \"version\": 1,\n  \"daily\": {\n";
+  bool first = true;
+  for (const auto& entry : snapshot) {
+    if (!first)
+      oss << ",\n";
+    first = false;
+    const StatsCounters& counters = entry.second;
+    oss << "    \"" << JsonEscape(entry.first)
+        << "\": { \"keystrokes\": " << counters.keystrokes
+        << ", \"chars\": " << counters.chars
+        << ", \"speed_chars\": " << counters.speed_chars
+        << ", \"active_milliseconds\": "
+        << counters.active_milliseconds << " }";
+  }
+  oss << "\n  }\n}\n";
+  const std::string content = oss.str();
+
+  const std::wstring tmp = path + L".tmp";
   {
     std::ofstream ofs(tmp.c_str(), std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
       LOG(ERROR) << "InputStats: cannot write tmp file";
       return false;
     }
-    ofs.write(content.data(), content.size());
+    ofs.write(content.data(), static_cast<std::streamsize>(content.size()));
     ofs.flush();
+    if (!ofs) {
+      LOG(ERROR) << "InputStats: failed writing tmp file";
+      return false;
+    }
   }
   if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
     LOG(ERROR) << "InputStats: rename tmp failed";
     return false;
   }
 
-  // 写盘成功：记录时间并清 dirty（此间若又有新计数会重新置 dirty）
+  // Clear dirty only if no newer statistics arrived during this save.
   {
     std::lock_guard<std::mutex> lock(mutex_);
     last_save_time_ = std::time(nullptr);
-    dirty_ = false;
+    if (data_generation_ == snapshot_generation)
+      dirty_ = false;
   }
   return true;
 }
 
-// ---------------- 聚合 ----------------
+// ---------------- Aggregation ----------------
 
 StatsCounters InputStats::Today() const {
   std::lock_guard<std::mutex> lock(mutex_);
